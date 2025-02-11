@@ -1,13 +1,16 @@
 services:
   certs:
     build:
+      args:
+      - domain=$DOMAIN
       dockerfile_inline: |
         FROM alpine:3
 
-        ARG PASS=pass
-        ARG CA_SUBJECT="/C=US/ST=Denial/L=Springfield/O=Dis/CN=Local Root CA"
-        ARG CERT_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.service.local
-        ARG CERT_EXTENSIONS=subjectAltName=DNS:*.service.local
+        ARG domain
+
+        ARG CA_SUBJECT="/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$$domain"
+        ARG CERT_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$$domain
+        ARG CERT_EXTENSIONS=subjectAltName=DNS:*.$$domain
         
         RUN apk add --no-cache openssl && \
             mkdir -p /opt/certs
@@ -16,15 +19,15 @@ services:
         # Generate Local CA
         RUN \
             # Generate CA key 
-            openssl genrsa -aes256 -passout pass:$$PASS -out ca.key 4096 && \
+            openssl genrsa -aes256 -passout pass:pass -out ca.key 4096 && \
             # Generate CA cert 
-            openssl req -x509 -new -nodes -key ca.key -passin pass:$$PASS -sha256 -days 3650 -out ca.crt -subj "$$CA_SUBJECT" && \
+            openssl req -x509 -new -nodes -key ca.key -passin pass:pass -sha256 -days 3650 -out ca.crt -subj "$$CA_SUBJECT" && \
             # Generate Server Key
             openssl genrsa -out server.key 2048 && \
             # Generate Server CSR
             openssl req -new -key server.key -out server.csr -subj "$$CERT_SUBJECT" && \
             # Generate Server Cert
-            openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -passin pass:$$PASS -CAcreateserial -out server.crt -days 825 -sha256 \
+            openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -passin pass:pass -CAcreateserial -out server.crt -days 825 -sha256 \
                 -extfile <(echo "$$CERT_EXTENSIONS") && \
             # Clean up       
             rm -f ca.key server.csr
@@ -32,8 +35,8 @@ services:
         VOLUME /certs
         VOLUME /trusted
         CMD ["sh", "-c", " \
-          cp -u /opt/certs/server.key /opt/certs/server.crt /certs; \
-          cp -u /opt/certs/ca.crt /trusted; \
+          cp -f /opt/certs/server.key /opt/certs/server.crt /certs; \
+          cp -f /opt/certs/ca.crt /trusted; \
         "]
     volumes:
     - certs:/certs
@@ -48,6 +51,8 @@ services:
     ports:
     - 127.0.0.1:80:80
     - 127.0.0.1:443:443
+    environment:
+    - NGINX_ENTRYPOINT_QUIET_LOGS=1
     networks:
     - services
     depends_on:
@@ -69,9 +74,74 @@ networks:
 
 configs:
   nginx_conf:
-    file: ./nginx.conf
+    content: |
+      server {
+          listen      80 default_server;
+          listen      443 ssl default_server;
+          listen      [::]:80 default_server;
+          listen      [::]:443 ssl default_server;
+          server_name  _;
+
+          ssl_certificate /etc/nginx/certs/server.crt;
+          ssl_certificate_key /etc/nginx/certs/server.key;
+          # error_log /dev/null emerg;
+
+          return 418;
+      }
+
+      server {
+          listen      80;
+          listen      [::]:80;
+          server_name *.$DOMAIN;
+
+          return 301 https://$$host$$request_uri;
+      }
+
+      server {
+          listen      443 ssl;
+          listen      [::]:443 ssl;
+          server_name *.$DOMAIN;
+          
+          ssl_certificate /etc/nginx/certs/server.crt;
+          ssl_certificate_key /etc/nginx/certs/server.key;
+
+          set $$service "";
+          if ($$host ~* ^([a-z0-9-]+)\.\w+\.\w+$) {
+              set $$service $$1;
+          }
+          if ($$service = "") {
+              return 418;
+          }
+
+          location / {
+              resolver            127.0.0.11 ipv6=off;
+              proxy_pass          http://$$service:8080;
+              proxy_set_header    Host $$host;
+              proxy_set_header    Connection "";
+              proxy_set_header    X-Real-IP $$remote_addr;
+              proxy_buffering     off;
+              proxy_http_version  1.1;
+          }
+
+          error_page 502 @unavailable;
+          
+          location @unavailable {
+              return 418;
+          }
+      }
+
   dnsmasq_conf:
-    file: ./dnsmasq.conf
+    content: |
+      local-service
+      dns-forward-max=1024
+      min-cache-ttl=300
+      rebind-domain-ok=
+      # Cloudflare DNS as upstream server
+      server=1.0.0.1
+      server=1.1.1.1
+      interface=*
+      address=/.$DOMAIN/127.0.0.1
+      address=/.$DOMAIN/::1
 
 volumes:
   certs:

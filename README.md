@@ -4,6 +4,17 @@ This repository contains configuration for local services domain zone `*.service
 
 ## Setup
 
+### Configuration
+
+Service domain zone is configured in [.env](.env) file. You can change it to a domain name which suits your style.
+
+> [!Note]
+> Browsers do not accept second-level wildcard certificates, therefore it is advised against using single (tld) level domain name, e.g `.home` or `.localhost`
+
+```env
+DOMAIN=service.local
+```
+
 ### Start services
 
 ```shell
