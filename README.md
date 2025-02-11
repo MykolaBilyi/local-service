@@ -15,15 +15,40 @@ Service domain zone is configured in [.env](.env) file. You can change it to a d
 DOMAIN=service.local
 ```
 
-### Start services
+### Start services on Ubuntu-like systems
+
+For Ubuntu-like systems (e.g. Linux Mint), you can use next command
+
+```shell
+docker compose --profile ubuntu up -d
+```
+
+This does the following:
+
+- Starts services
+- Configures `systemd-resolved` to resolve `*.service.local` domain names by adding a configuration file to `/etc/systemd/resolved.conf.d/`
+- Adds local certificate authority to system trust store by adding a certificate file to `/usr/local/share/ca-certificates/`
+
+To apply the changes, restart `systemd-resolved` service and update ca certificates:
+
+```shell
+sudo systemctl restart systemd-resolved
+sudo update-ca-certificates
+```
+
+### Start services on other systems
+
+For other systems, you can use next command
 
 ```shell
 docker compose up -d
 ```
 
-### Add local domain service zone to systemd-resolved
+You will have to figure out how to configure local DNS and certificate authority on your system.
 
-Use following steps to add local domain service zone to systemd-resolved.
+### Add local domain service zone to `systemd-resolved`
+
+If your system uses `systemd-resolved`, you can use following steps to add local domain service zone to systemd-resolved.
 
 ```shell
 sudo mkdir -p /etc/systemd/resolved.conf.d
@@ -56,7 +81,7 @@ sudo docker cp local-service-certs-1:/opt/certs/ca.crt /usr/local/share/ca-certi
 sudo update-ca-certificates
 ```
 
-You may need to change `local-service-certs-1` into name of your `certs` container.
+You may need to change `local-service-certs-1` into real name of your `certs` container.
 
 > [!Note]
 > This step should be done after every build  of the `certs` container.

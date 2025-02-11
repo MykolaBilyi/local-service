@@ -68,6 +68,33 @@ services:
       target: /etc/dnsmasq.conf
     restart: always
 
+  certs_ubuntu:
+    image: alpine:3
+    command: cp -f /trusted/ca.crt /usr/local/share/ca-certificates/$DOMAIN.crt
+    volumes:
+    - trusted:/trusted
+    - /usr/local/share/ca-certificates:/usr/local/share/ca-certificates
+    env_file:
+    - .env
+    depends_on:
+    - certs
+    profiles:
+    - ubuntu
+  dns_ubuntu:
+    image: alpine:3
+    command: cp -f /etc/resolved.conf /etc/systemd/resolved.conf.d/10-$DOMAIN.conf
+    env_file:
+    - .env
+    configs:
+    - source: resolved_conf
+      target: /etc/resolved.conf
+    volumes:
+    - /etc/systemd/resolved.conf.d:/etc/systemd/resolved.conf.d
+    depends_on:
+    - dns
+    profiles:
+    - ubuntu
+
 networks:
   services:
     name: services
@@ -142,6 +169,11 @@ configs:
       interface=*
       address=/.$DOMAIN/127.0.0.1
       address=/.$DOMAIN/::1
+  resolved_conf:
+    content: |
+      [Resolve]
+      DNS=127.0.0.1
+      Domains=~$DOMAIN
 
 volumes:
   certs:
