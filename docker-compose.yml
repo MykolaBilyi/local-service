@@ -53,8 +53,6 @@ services:
     - 127.0.0.1:443:443
     environment:
     - NGINX_ENTRYPOINT_QUIET_LOGS=1
-    networks:
-    - services
     depends_on:
     - certs
     restart: always
@@ -96,9 +94,10 @@ services:
     - ubuntu
 
 networks:
-  services:
+  default:
     name: services
-
+    attachable: true
+    
 configs:
   nginx_conf:
     content: |
@@ -141,7 +140,7 @@ configs:
           }
 
           location / {
-              resolver            127.0.0.11 ipv6=off;
+              resolver            127.0.0.11 ipv6=off valid=5s;
               proxy_pass          http://$$service:8080;
               proxy_set_header    Host $$host;
               proxy_set_header    Connection "";
