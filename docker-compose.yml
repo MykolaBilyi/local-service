@@ -120,6 +120,10 @@ configs:
           listen      [::]:80;
           server_name *.$DOMAIN;
 
+          if ($$http_x_teapot) {
+            return 418;
+          }
+
           return 301 https://$$host$$request_uri;
       }
 
@@ -131,28 +135,15 @@ configs:
           ssl_certificate /etc/nginx/certs/server.crt;
           ssl_certificate_key /etc/nginx/certs/server.key;
 
-          set $$service "";
-          if ($$host ~* ^([a-z0-9-]+)\.\w+\.\w+$) {
-              set $$service $$1;
-          }
-          if ($$service = "") {
-              return 418;
-          }
-
           location / {
               resolver            127.0.0.11 ipv6=off valid=5s;
-              proxy_pass          http://$$service:8080;
+              proxy_pass          http://$$host; # this assumes if no container found, 127.0.0.1 returned
               proxy_set_header    Host $$host;
               proxy_set_header    Connection "";
               proxy_set_header    X-Real-IP $$remote_addr;
+              proxy_set_header    X-Teapot yes;
               proxy_buffering     off;
               proxy_http_version  1.1;
-          }
-
-          error_page 502 @unavailable;
-          
-          location @unavailable {
-              return 418;
           }
       }
 
