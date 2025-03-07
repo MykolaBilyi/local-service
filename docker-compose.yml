@@ -2,15 +2,15 @@ services:
   certs:
     build:
       args:
-      - domain=$DOMAIN
+      - CA_SUBJECT=${CA_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN}
+      - CERT_SUBJECT=${CERT_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN}
+      - CERT_EXTENSIONS=${CERT_EXTENSIONS-subjectAltName=DNS:*.$DOMAIN}
       dockerfile_inline: |
         FROM alpine:3
 
-        ARG domain
-
-        ARG CA_SUBJECT="/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$$domain"
-        ARG CERT_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$$domain
-        ARG CERT_EXTENSIONS=subjectAltName=DNS:*.$$domain
+        ARG CA_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN
+        ARG CERT_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN
+        ARG CERT_EXTENSIONS=subjectAltName=DNS:*.$DOMAIN
         
         RUN apk add --no-cache openssl && \
             mkdir -p /opt/certs
@@ -45,22 +45,41 @@ services:
     image: nginx:alpine
     configs:
     - source: nginx_conf
-      target: /etc/nginx/conf.d/default.conf
+      target: /etc/nginx/nginx.conf
     volumes:
     - certs:/etc/nginx/certs
+    - ./sablier.js:/etc/nginx/conf.d/sablier.js
     ports:
     - 127.0.0.1:80:80
     - 127.0.0.1:443:443
+    dns: 172.26.0.53
     environment:
     - NGINX_ENTRYPOINT_QUIET_LOGS=1
     depends_on:
     - certs
+    - dns
+    restart: always
+  controller:
+    image: sablierapp/sablier:1.8.6
+    command: 
+    - start
+    - --provider.name=docker
+    - --provider.auto-stop-on-startup=true
+    - --server.port=80
+    - --logging.level=info
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+    - NO_COLOR=1
     restart: always
   dns:
     image: dockurr/dnsmasq
     ports:
     - 127.0.0.1:53:53/udp
     - 127.0.0.1:53:53/tcp
+    networks:
+      default:
+        ipv4_address: 172.26.0.53
     configs:
     - source: dnsmasq_conf
       target: /etc/dnsmasq.conf
@@ -95,13 +114,46 @@ services:
 
 networks:
   default:
-    name: services
-    attachable: true
+    name: ${DOCKER_NETWORK:-$DOMAIN}
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.26.0.0/16
     
 configs:
   nginx_conf:
     content: |
-      server {
+      user  nginx;
+      worker_processes  auto;
+
+      load_module modules/ngx_http_js_module.so;
+
+      error_log  /var/log/nginx/error.log notice;
+      pid        /var/run/nginx.pid;
+      
+      events {
+        worker_connections  1024;
+      }
+
+      http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$$remote_addr - $$remote_user [$$time_local] $$host "$$request" '
+                          '$$status $$body_bytes_sent "$$http_referer" '
+                          '"$$http_user_agent" "$$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+        #tcp_nopush     on;
+        charset         utf-8;
+
+        keepalive_timeout  65;
+
+        js_import conf.d/sablier.js;
+
+        server {
           listen      80 default_server;
           listen      443 ssl default_server;
           listen      [::]:80 default_server;
@@ -112,22 +164,63 @@ configs:
           ssl_certificate_key /etc/nginx/certs/server.key;
           # error_log /dev/null emerg;
 
-          return 418;
-      }
+          default_type text/plain;
+          return 418 '¯\\_(ツ)_/¯\n';
+        }
 
-      server {
+        map $$host $$sablierNames {
+          # FIXME hardcoded domain name
+          "~^(?<subdomain>.+)\.service\.local$$" $$subdomain;
+          default "";
+        }
+
+        upstream sablier {
+          server 127.0.0.1:80;
+        }
+
+        server {
+          listen      127.0.0.1:80;
+          server_name sablier;
+          access_log  /dev/null;
+
+          set $$sablierUrl /sablier;
+          set $$sablierSessionDuration 15m;
+          set $$sablierNginxInternalRedirect @redirect;
+
+          location /sablier/ {
+            internal;
+            subrequest_output_buffer_size 32k;
+            proxy_method GET;
+            proxy_pass http://controller/;
+          }
+
+          location @redirect {
+            return 302 https://$$host$$request_uri;
+          }
+
+          location / {
+            set $$sablierBlockingTimeout "";
+            if ($$http_user_agent !~* "Chrome|Firefox|Safari|Opera|MSIE|Trident") {
+              # block request with timeout
+              set $$sablierBlockingTimeout 30s;
+            }
+            set $$sablierDynamicShowDetails true;
+            set $$sablierDynamicRefreshFrequency 5s;
+            set $$sablierDynamicName $$host;
+            set $$sablierDynamicTheme shuffle;
+            js_content sablier.call;
+          }          
+        }
+
+        server {
           listen      80;
           listen      [::]:80;
           server_name *.$DOMAIN;
 
-          if ($$http_x_teapot) {
-            return 418;
-          }
-
           return 301 https://$$host$$request_uri;
-      }
+        }
 
-      server {
+        server {
           listen      443 ssl;
           listen      [::]:443 ssl;
           server_name *.$DOMAIN;
@@ -136,15 +229,26 @@ configs:
           ssl_certificate_key /etc/nginx/certs/server.key;
 
           location / {
-              resolver            127.0.0.11 ipv6=off valid=5s;
-              proxy_pass          http://$$host; # this assumes if no container found, 127.0.0.1 returned
-              proxy_set_header    Host $$host;
-              proxy_set_header    Connection "";
-              proxy_set_header    X-Real-IP $$remote_addr;
-              proxy_set_header    X-Teapot yes;
-              proxy_buffering     off;
-              proxy_http_version  1.1;
+            resolver                127.0.0.11 ipv6=off valid=5s;
+            proxy_pass              http://$$sablierNames.${DOCKER_NETWORK:-$DOMAIN};
+            proxy_set_header        Host $$host;
+            proxy_set_header        Upgrade $$http_upgrade;
+            proxy_set_header        Connection "upgrade";
+            proxy_set_header        X-Forwarded-For $$proxy_add_x_forwarded_for;
+            proxy_set_header        X-Real-IP $$remote_addr;
+            proxy_buffering         off;
+            proxy_request_buffering off;
+            proxy_http_version      1.1;
+            client_max_body_size    0;
+            error_page 502          @controller;
           }
+
+          location @controller {
+            proxy_pass              http://sablier;
+            proxy_set_header        Host $$host;
+            proxy_request_buffering off;
+          }
+        }
       }
 
   dnsmasq_conf:
@@ -154,9 +258,10 @@ configs:
       min-cache-ttl=300
       rebind-domain-ok=
       # Cloudflare DNS as upstream server
-      server=1.0.0.1
-      server=1.1.1.1
+      # server=1.0.0.1
+      # server=1.1.1.1
       interface=*
+      address=/.${DOCKER_NETWORK:-$DOMAIN}/127.0.0.1
       address=/.$DOMAIN/127.0.0.1
       address=/.$DOMAIN/::1
   resolved_conf:
