@@ -72,6 +72,12 @@ services:
     environment:
     - NO_COLOR=1
     restart: always
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    command: --include-stopped --interval=3600
+    restart: always
   dns:
     image: dockurr/dnsmasq
     ports:
