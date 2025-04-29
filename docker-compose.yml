@@ -52,7 +52,9 @@ services:
     ports:
     - 127.0.0.1:80:80
     - 127.0.0.1:443:443
-    dns: 172.26.0.53
+    networks:
+    - default
+    - service
     environment:
     - NGINX_ENTRYPOINT_QUIET_LOGS=1
     depends_on:
@@ -83,9 +85,6 @@ services:
     ports:
     - 127.0.0.1:53:53/udp
     - 127.0.0.1:53:53/tcp
-    networks:
-      default:
-        ipv4_address: 172.26.0.53
     configs:
     - source: dnsmasq_conf
       target: /etc/dnsmasq.conf
@@ -120,12 +119,10 @@ services:
 
 networks:
   default:
-    name: ${DOCKER_NETWORK:-$DOMAIN}
+  service:
+    name: ${DOCKER_NETWORK:-service}
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.26.0.0/16
-    
+      
 configs:
   nginx_conf:
     content: |
@@ -236,7 +233,7 @@ configs:
 
           location / {
             resolver                127.0.0.11 ipv6=off valid=5s;
-            proxy_pass              http://$$sablierNames.${DOCKER_NETWORK:-$DOMAIN};
+            proxy_pass              http://$$sablierNames.${DOCKER_NETWORK:-service};
             proxy_set_header        Host $$host;
             proxy_set_header        Upgrade $$http_upgrade;
             proxy_set_header        Connection "upgrade";
