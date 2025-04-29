@@ -50,8 +50,8 @@ services:
     - certs:/etc/nginx/certs
     - ./sablier.js:/etc/nginx/conf.d/sablier.js
     ports:
-    - 127.0.0.1:80:80
-    - 127.0.0.1:443:443
+    - ${HOST_IPv4:-127.0.0.1}:80:80
+    - ${HOST_IPv4:-127.0.0.1}:443:443
     networks:
     - default
     - service
@@ -83,8 +83,8 @@ services:
   dns:
     image: dockurr/dnsmasq
     ports:
-    - 127.0.0.1:53:53/udp
-    - 127.0.0.1:53:53/tcp
+    - ${HOST_IPv4:-127.0.0.1}:53:53/udp
+    - ${HOST_IPv4:-127.0.0.1}:53:53/tcp
     configs:
     - source: dnsmasq_conf
       target: /etc/dnsmasq.conf
@@ -264,13 +264,12 @@ configs:
       # server=1.0.0.1
       # server=1.1.1.1
       interface=*
-      address=/.${DOCKER_NETWORK:-$DOMAIN}/127.0.0.1
-      address=/.$DOMAIN/127.0.0.1
-      address=/.$DOMAIN/::1
+      address=/.$DOMAIN/${HOST_IPv4:-127.0.0.1}
+      address=/.$DOMAIN/${HOST_IPv6:-::1}
   resolved_conf:
     content: |
       [Resolve]
-      DNS=127.0.0.1
+      DNS=${HOST_IPv4:-127.0.0.1}
       Domains=~$DOMAIN
 
 volumes:
