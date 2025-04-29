@@ -2,15 +2,15 @@ services:
   certs:
     build:
       args:
-      - CA_SUBJECT=${CA_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN}
-      - CERT_SUBJECT=${CERT_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN}
-      - CERT_EXTENSIONS=${CERT_EXTENSIONS-subjectAltName=DNS:*.$DOMAIN}
+      - CA_SUBJECT=${CA_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=$DOMAIN}
+      - CERT_SUBJECT=${CERT_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=$DOMAIN}
+      - CERT_EXTENSIONS=${CERT_EXTENSIONS-subjectAltName=DNS:$DOMAIN,DNS:*.$DOMAIN}
       dockerfile_inline: |
         FROM alpine:3
 
-        ARG CA_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN
-        ARG CERT_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=*.$DOMAIN
-        ARG CERT_EXTENSIONS=subjectAltName=DNS:*.$DOMAIN
+        ARG CA_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=$DOMAIN
+        ARG CERT_SUBJECT=/C=US/ST=Denial/L=Springfield/O=Dis/CN=$DOMAIN
+        ARG CERT_EXTENSIONS=subjectAltName=DNS:$DOMAIN,DNS:*.$DOMAIN
         
         RUN apk add --no-cache openssl && \
             mkdir -p /opt/certs
@@ -21,11 +21,11 @@ services:
             # Generate CA key 
             openssl genrsa -aes256 -passout pass:pass -out ca.key 4096 && \
             # Generate CA cert 
-            openssl req -x509 -new -nodes -key ca.key -passin pass:pass -sha256 -days 3650 -out ca.crt -subj "$$CA_SUBJECT" && \
+            openssl req -x509 -new -nodes -key ca.key -utf8 -passin pass:pass -sha256 -days 3650 -out ca.crt -subj "$$CA_SUBJECT" && \
             # Generate Server Key
             openssl genrsa -out server.key 2048 && \
             # Generate Server CSR
-            openssl req -new -key server.key -out server.csr -subj "$$CERT_SUBJECT" && \
+            openssl req -new -key server.key -utf8 -out server.csr -subj "$$CERT_SUBJECT" && \
             # Generate Server Cert
             openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -passin pass:pass -CAcreateserial -out server.crt -days 825 -sha256 \
                 -extfile <(echo "$$CERT_EXTENSIONS") && \
