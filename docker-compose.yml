@@ -1,5 +1,5 @@
 services:
-  certs:
+  cert:
     build:
       args:
       - CA_SUBJECT=${CA_SUBJECT-/C=US/ST=Denial/L=Springfield/O=Dis/CN=$DOMAIN}
@@ -21,33 +21,35 @@ services:
             # Generate CA key 
             openssl genrsa -aes256 -passout pass:pass -out ca.key 4096 && \
             # Generate CA cert 
-            openssl req -x509 -new -nodes -key ca.key -utf8 -passin pass:pass -sha256 -days 3650 -out ca.crt -subj "$$CA_SUBJECT" && \
-            # Generate Server Key
-            openssl genrsa -out server.key 2048 && \
-            # Generate Server CSR
-            openssl req -new -key server.key -utf8 -out server.csr -subj "$$CERT_SUBJECT" && \
-            # Generate Server Cert
-            openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -passin pass:pass -CAcreateserial -out server.crt -days 825 -sha256 \
+            openssl req -x509 -new -nodes -key ca.key -utf8 -passin pass:pass -sha256 -days 3650 -out ca.cert -subj "$$CA_SUBJECT" && \
+            # Generate Service key
+            openssl genrsa -out ssl.cert.key 2048 && \
+            # Generate Service CSR
+            openssl req -new -key ssl.cert.key -utf8 -out service.csr -subj "$$CERT_SUBJECT" && \
+            # Generate Service cert
+            openssl x509 -req -in service.csr -CA ca.cert -CAkey ca.key -passin pass:pass -CAcreateserial -out ssl.cert -days 825 -sha256 \
                 -extfile <(echo "$$CERT_EXTENSIONS") && \
             # Clean up       
-            rm -f ca.key server.csr
+            rm -f ca.key service.csr
         
-        VOLUME /certs
-        VOLUME /trusted
+        VOLUME /cert_storage
+        VOLUME /trusted_storage
         CMD ["sh", "-c", " \
-          cp -f /opt/certs/server.key /opt/certs/server.crt /certs; \
-          cp -f /opt/certs/ca.crt /trusted; \
+          cp -f /opt/certs/ssl.cert.key /opt/certs/ssl.cert /cert_storage; \
+          cp -f /opt/certs/ca.cert /trusted_storage; \
         "]
     volumes:
-    - certs:/certs
-    - trusted:/trusted
+    - cert:/cert_storage
+    - authority:/trusted_storage
+    profiles:
+      - local
   proxy:
     image: nginx:alpine
     configs:
     - source: nginx_conf
       target: /etc/nginx/nginx.conf
     volumes:
-    - certs:/etc/nginx/certs
+    - cert:/etc/nginx/certs
     - ./sablier.js:/etc/nginx/conf.d/sablier.js
     ports:
     - ${HOST_IPv4:-127.0.0.1}:80:80
@@ -57,11 +59,8 @@ services:
     - service
     environment:
     - NGINX_ENTRYPOINT_QUIET_LOGS=1
-    depends_on:
-    - certs
-    - dns
     restart: always
-  controller:
+  manager:
     image: sablierapp/sablier:1.8.6
     command: 
     - start
@@ -74,7 +73,7 @@ services:
     environment:
     - NO_COLOR=1
     restart: always
-  watchtower:
+  updates:
     image: containrrr/watchtower
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock
@@ -90,21 +89,27 @@ services:
       target: /etc/dnsmasq.conf
     restart: always
 
-  certs_ubuntu:
+  ca_ubuntu:
     image: alpine:3
-    command: cp -f /trusted/ca.crt /usr/local/share/ca-certificates/$DOMAIN.crt
+    entrypoint: ["sh", "-c"]
+    command: 
+    - |
+      cp -f /trusted/ca.cert /usr/local/share/ca-certificates/${DOMAIN:-localhost}.crt
+      echo "Certficates are copied, dont' forget to run \`sudo update-ca-certificates\` on host"
     volumes:
-    - trusted:/trusted
+    - authority:/trusted
     - /usr/local/share/ca-certificates:/usr/local/share/ca-certificates
     env_file:
     - .env
-    depends_on:
-    - certs
     profiles:
     - ubuntu
   dns_ubuntu:
     image: alpine:3
-    command: cp -f /etc/resolved.conf /etc/systemd/resolved.conf.d/10-$DOMAIN.conf
+    entrypoint: ["sh", "-c"]
+    command: 
+    - |
+      cp -f /etc/resolved.conf /etc/systemd/resolved.conf.d/10-$DOMAIN.conf
+      echo "resolved config added, dont' forget to run \`sudo systemctl restart systemd-resolved\` on host"
     env_file:
     - .env
     configs:
@@ -112,8 +117,6 @@ services:
       target: /etc/resolved.conf
     volumes:
     - /etc/systemd/resolved.conf.d:/etc/systemd/resolved.conf.d
-    depends_on:
-    - dns
     profiles:
     - ubuntu
 
@@ -163,8 +166,8 @@ configs:
           listen      [::]:443 ssl default_server;
           server_name  _;
 
-          ssl_certificate /etc/nginx/certs/server.crt;
-          ssl_certificate_key /etc/nginx/certs/server.key;
+          ssl_certificate /etc/nginx/certs/ssl.cert;
+          ssl_certificate_key /etc/nginx/certs/ssl.cert.key;
           # error_log /dev/null emerg;
 
           default_type text/plain;
@@ -172,8 +175,7 @@ configs:
         }
 
         map $$host $$sablierNames {
-          # FIXME hardcoded domain name
-          "~^(?<subdomain>.+)\.service\.local$$" $$subdomain;
+          "~^(?<subdomain>[^\.]+)\..+$$" $$subdomain;
           default "";
         }
 
@@ -194,7 +196,7 @@ configs:
             internal;
             subrequest_output_buffer_size 32k;
             proxy_method GET;
-            proxy_pass http://controller/;
+            proxy_pass http://manager/;
           }
 
           location @redirect {
@@ -209,7 +211,7 @@ configs:
             }
             set $$sablierDynamicShowDetails true;
             set $$sablierDynamicRefreshFrequency 5s;
-            set $$sablierDynamicName $$host;
+            set $$sablierDynamicName "$$sablierNames service";
             set $$sablierDynamicTheme shuffle;
             js_content sablier.call;
           }          
@@ -218,7 +220,7 @@ configs:
         server {
           listen      80;
           listen      [::]:80;
-          server_name *.$DOMAIN;
+          server_name .$DOMAIN;
 
           return 301 https://$$host$$request_uri;
         }
@@ -228,8 +230,8 @@ configs:
           listen      [::]:443 ssl;
           server_name *.$DOMAIN;
           
-          ssl_certificate /etc/nginx/certs/server.crt;
-          ssl_certificate_key /etc/nginx/certs/server.key;
+          ssl_certificate /etc/nginx/certs/ssl.cert;
+          ssl_certificate_key /etc/nginx/certs/ssl.cert.key;
 
           location / {
             resolver                127.0.0.11 ipv6=off valid=5s;
@@ -243,10 +245,10 @@ configs:
             proxy_request_buffering off;
             proxy_http_version      1.1;
             client_max_body_size    0;
-            error_page 502          @controller;
+            error_page 502          @manager;
           }
 
-          location @controller {
+          location @manager {
             proxy_pass              http://sablier;
             proxy_set_header        Host $$host;
             proxy_request_buffering off;
@@ -267,11 +269,13 @@ configs:
       address=/.$DOMAIN/${HOST_IPv4:-127.0.0.1}
       address=/.$DOMAIN/${HOST_IPv6:-::1}
   resolved_conf:
+    # This is used to configure host system's DNS resolver
     content: |
       [Resolve]
       DNS=${HOST_IPv4:-127.0.0.1}
       Domains=~$DOMAIN
 
 volumes:
-  certs:
-  trusted:
+  cert:
+    name: ssl_${DOMAIN}
+  authority:

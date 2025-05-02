@@ -77,11 +77,11 @@ This is useful for services which use system trust store to validate certificate
 > Local cert authority adds another attack vector to your system. Only use this if you acknowledge the risks.
 
 ```shell
-sudo docker cp local-service-certs-1:/opt/certs/ca.crt /usr/local/share/ca-certificates/service.local.crt
+sudo docker cp local-service-cert-1:/opt/certs/ca.crt /usr/local/share/ca-certificates/service.local.crt
 sudo update-ca-certificates
 ```
 
-You may need to change `local-service-certs-1` into real name of your `certs` container.
+You may need to change `local-service-cert-1` into real name of your `cert` container.
 
 > [!Note]
-> This step should be done after every build  of the `certs` container.
+> This step should be done after every build  of the `cert` container.
