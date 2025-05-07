@@ -43,6 +43,7 @@ services:
     - authority:/trusted_storage
     profiles:
       - local
+
   proxy:
     image: nginx:alpine
     configs:
@@ -64,10 +65,13 @@ services:
     image: sablierapp/sablier:1.8.6
     command: 
     - start
+    - --logging.level=info
     - --provider.name=docker
     - --provider.auto-stop-on-startup=true
     - --server.port=80
-    - --logging.level=info
+    - --sessions.default-duration=15m
+    - --strategy.blocking.default-timeout=30s
+    - --strategy.dynamic.default-theme=shuffle
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -164,7 +168,7 @@ configs:
           listen      443 ssl default_server;
           listen      [::]:80 default_server;
           listen      [::]:443 ssl default_server;
-          server_name  _;
+          server_name  default.$DOMAIN;
 
           ssl_certificate /etc/nginx/certs/ssl.cert;
           ssl_certificate_key /etc/nginx/certs/ssl.cert.key;
@@ -174,68 +178,53 @@ configs:
           return 418 '¯\\_(ツ)_/¯\n';
         }
 
-        map $$host $$sablierNames {
-          "~^(?<subdomain>[^\.]+)\..+$$" $$subdomain;
-          default "";
-        }
-
-        upstream sablier {
-          server 127.0.0.1:80;
-        }
-
-        server {
-          listen      127.0.0.1:80;
-          server_name sablier;
-          access_log  /dev/null;
-
-          set $$sablierUrl /sablier;
-          set $$sablierSessionDuration 15m;
-          set $$sablierNginxInternalRedirect @redirect;
-
-          location /sablier/ {
-            internal;
-            subrequest_output_buffer_size 32k;
-            proxy_method GET;
-            proxy_pass http://manager/;
-          }
-
-          location @redirect {
-            return 302 https://$$host$$request_uri;
-          }
-
-          location / {
-            set $$sablierBlockingTimeout "";
-            if ($$http_user_agent !~* "Chrome|Firefox|Safari|Opera|MSIE|Trident") {
-              # block request with timeout
-              set $$sablierBlockingTimeout 30s;
-            }
-            set $$sablierDynamicShowDetails true;
-            set $$sablierDynamicRefreshFrequency 5s;
-            set $$sablierDynamicName "$$sablierNames service";
-            set $$sablierDynamicTheme shuffle;
-            js_content sablier.call;
-          }          
-        }
-
         server {
           listen      80;
           listen      [::]:80;
           server_name .$DOMAIN;
 
-          return 301 https://$$host$$request_uri;
+          return 307 https://$$host$$request_uri;
         }
 
+        map $$host $$service {
+          "~^(?<subdomain>[^\.]+)\..+$$" $$subdomain;
+          default "";
+        }
+
+        map $$http_user_agent $$strategy {
+          default         blocking;
+          "~(Chrome|Firefox|Safari|Opera|MSIE|Trident)" dynamic;
+        }
+
+        map $$service_status $$service_url {
+          default         http://$$service.${DOCKER_NETWORK:-service};
+          "ready"         http://$$service.${DOCKER_NETWORK:-service};
+          "not-ready"     http://manager/api/strategies/dynamic?group=$$service&display_name=$$service;
+        }
+
+        map $$upstream_http_x_sablier_session_status $$service_no_cache {
+          default         1;
+          "ready"         0;
+        }
+
+        proxy_cache_path /opt/cache levels=1:2 keys_zone=manager:1m;
+
         server {
-          listen      443 ssl;
-          listen      [::]:443 ssl;
-          server_name *.$DOMAIN;
-          
+          listen          443 ssl;
+          listen          [::]:443 ssl;
+          server_name     *.$DOMAIN;
+
           ssl_certificate /etc/nginx/certs/ssl.cert;
           ssl_certificate_key /etc/nginx/certs/ssl.cert.key;
 
+          resolver        127.0.0.11 ipv6=off valid=5s;
+          default_type    text/plain;
+
           location / {
-            resolver                127.0.0.11 ipv6=off valid=5s;
-            proxy_pass              http://$$sablierNames.${DOCKER_NETWORK:-service};
+            auth_request            /_wakeup;
+            auth_request_set        $$service_status $$upstream_http_x_sablier_session_status;
+
+            proxy_pass              $$service_url;
             proxy_set_header        Host $$host;
             proxy_set_header        Upgrade $$http_upgrade;
             proxy_set_header        Connection "upgrade";
@@ -245,13 +234,28 @@ configs:
             proxy_request_buffering off;
             proxy_http_version      1.1;
             client_max_body_size    0;
-            error_page 502          @manager;
+            error_page              502 =418 @bro;
           }
 
-          location @manager {
-            proxy_pass              http://sablier;
-            proxy_set_header        Host $$host;
-            proxy_request_buffering off;
+          location = /_wakeup {
+            internal;
+            proxy_pass              http://manager/api/strategies/$$strategy?group=$$service&display_name=$$service;
+
+            proxy_buffering         on;
+            proxy_ignore_headers    Cache-Control;
+
+            proxy_cache             manager;
+            proxy_cache_key         $$service;
+            proxy_cache_valid       any 1m;
+            proxy_no_cache          $$service_no_cache;
+
+            # auth_request does not pass 404 errors, we will translate it to 200
+            proxy_intercept_errors  on;
+            error_page              404 =200 @bro;
+          }
+
+          location @bro {
+            return                  418 'ಠ_ಠ\n';
           }
         }
       }
