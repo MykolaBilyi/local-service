@@ -43,6 +43,30 @@ services:
     - authority:/trusted_storage
     profiles:
       - local
+
+  vpn:
+    image: tailscale/tailscale:latest
+    hostname: ${HOSTNAME:-$COMPOSE_PROJECT_NAME}
+    environment:
+    - TS_AUTHKEY=${TS_AUTHKEY:?Need to set TS_AUTHKEY}
+    - TS_STATE_DIR=/var/lib/tailscale
+    - TS_USERSPACE=true
+    - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:1055
+    volumes:
+    - tailscale:/var/lib/tailscale
+    devices:
+    - /dev/net/tun:/dev/net/tun
+    cap_add:
+    - net_admin
+    - sys_admin
+    networks:
+    - default
+    - service
+    ports:
+    - ${HOST_IPv4:-127.0.0.1}:80:80
+    - ${HOST_IPv4:-127.0.0.1}:443:443
+    restart: unless-stopped  
+
   proxy:
     image: nginx:alpine
     configs:
@@ -51,12 +75,9 @@ services:
     volumes:
     - cert:/etc/nginx/certs
     - ./sablier.js:/etc/nginx/conf.d/sablier.js
-    ports:
-    - ${HOST_IPv4:-127.0.0.1}:80:80
-    - ${HOST_IPv4:-127.0.0.1}:443:443
-    networks:
-    - default
-    - service
+    network_mode: service:vpn
+    depends_on:
+    - vpn
     environment:
     - NGINX_ENTRYPOINT_QUIET_LOGS=1
     restart: always
@@ -80,13 +101,13 @@ services:
     command: --include-stopped --interval=3600
     restart: always
   dns:
-    image: dockurr/dnsmasq
+    image: coredns/coredns
     ports:
     - ${HOST_IPv4:-127.0.0.1}:53:53/udp
     - ${HOST_IPv4:-127.0.0.1}:53:53/tcp
     configs:
-    - source: dnsmasq_conf
-      target: /etc/dnsmasq.conf
+    - source: Corefile
+      target: /Corefile
     restart: always
 
   ca_ubuntu:
@@ -256,18 +277,29 @@ configs:
         }
       }
 
-  dnsmasq_conf:
+  Corefile:
     content: |
-      local-service
-      dns-forward-max=1024
-      min-cache-ttl=300
-      rebind-domain-ok=
-      # Cloudflare DNS as upstream server
-      # server=1.0.0.1
-      # server=1.1.1.1
-      interface=*
-      address=/.$DOMAIN/${HOST_IPv4:-127.0.0.1}
-      address=/.$DOMAIN/${HOST_IPv6:-::1}
+      . {
+        acl {
+          block
+        }
+      }
+      $DOMAIN {
+        errors
+        cancel
+        template IN ANY $DOMAIN {
+          match "^([^.]+)\.$DOMAIN_REGEX\.$$"
+          answer "{{ index .Match 1 }}.$DOMAIN 60 IN CNAME $DOMAIN."
+          authority "$DOMAIN. 60 IN SOA $DOMAIN. hostmaster.$DOMAIN. (1 60 60 60 60)"
+          fallthrough
+        }
+        template IN ANY $DOMAIN {
+          match "^$DOMAIN_REGEX\.$$"
+          answer "$DOMAIN. 60 IN A ${HOST_IPv4:-127.0.0.1}"
+          answer "$DOMAIN. 60 IN AAAA ${HOST_IPv6:-::1}"
+          authority "$DOMAIN. 60 IN SOA $DOMAIN. hostmaster.$DOMAIN. (1 60 60 60 60)"
+        }
+      }
   resolved_conf:
     # This is used to configure host system's DNS resolver
     content: |
@@ -276,6 +308,7 @@ configs:
       Domains=~$DOMAIN
 
 volumes:
+  tailscale:
   cert:
     name: ssl_${DOMAIN}
   authority:
